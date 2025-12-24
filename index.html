@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Ice Fisher 16-Bit</title>
+
+<style>
+body {
+  margin: 0;
+  background: #1b1b1b;
+  font-family: monospace;
+  touch-action: none;
+}
+
+.console {
+  max-width: 480px;
+  margin: auto;
+  padding: 10px;
+  background: #c9c9a3;
+  border-radius: 20px;
+  box-shadow: inset 0 0 0 6px #8a8a6a;
+}
+
+.screen {
+  background: #2b4f6f;
+  border: 6px solid #4a4a32;
+  border-radius: 8px;
+}
+
+canvas {
+  width: 100%;
+  image-rendering: pixelated;
+}
+
+.controls {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+button {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: #777;
+  border: none;
+  font-weight: bold;
+}
+
+.wide {
+  width: 140px;
+  border-radius: 35px;
+}
+</style>
+</head>
+
+<body>
+<div class="console">
+  <div class="screen">
+    <canvas id="game" width="240" height="320"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="left">◀</button>
+    <button id="right">▶</button>
+    <button id="action" class="wide">CAST / REEL</button>
+  </div>
+</div>
+
+<script>
+/* ================= CORE ================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+let score = 0, lives = 3, fishCaught = 0;
+let combo = 0, comboTimer = 0;
+let state = "idle";
+
+const fisherman = { x: W / 2, y: 20 };
+let hook = { x: W / 2, y: 40, angle: 0, active: false };
+let hookedFish = null;
+
+/* Screen shake */
+let shakeTime = 0;
+
+/* Audio */
+let audioCtx, musicOsc, musicGain;
+let musicSpeed = 1;
+
+/* Utilities */
+const rand = (a,b)=>Math.random()*(b-a)+a;
+
+/* ================= LANES ================= */
+const lanes = [];
+let y = 90;
+for (let i = 0; i < 5; i++) {
+  lanes.push({
+    y,
+    baseSpeed: rand(0.4,0.8),
+    depth: i,
+    entities: []
+  });
+  y += 30 + i * 6;
+}
+
+/* ================= FISH RARITY ================= */
+function getRarity(depth) {
+  const r = Math.random() + depth * 0.15;
+  if (r > 1.4) return { name:"Legendary", color:"#ffd700", mult:4 };
+  if (r > 1.1) return { name:"Rare", color:"#c77dff", mult:2.5 };
+  if (r > 0.7) return { name:"Uncommon", color:"#4dff88", mult:1.5 };
+  return { name:"Common", color:"#4db8ff", mult:1 };
+}
+
+/* ================= SPAWNING ================= */
+function spawnEntity(lane) {
+  const r = Math.random();
+  if (r < 0.6) {
+    const rarity = getRarity(lane.depth);
+    lane.entities.push({
+      type:"fish",
+      x: Math.random()<0.5?-20:W+20,
+      size: rand(6,40),
+      rarity
+    });
+  } else if (fishCaught > 0 && r > 0.85) {
+    lane.entities.push({
+      type:"predator",
+      x: Math.random()<0.5?-30:W+30
+    });
+  } else {
+    lane.entities.push({
+      type:"junk",
+      x: Math.random()<0.5?-20:W+20
+    });
+  }
+}
+
+/* ================= INPUT ================= */
+left.ontouchstart = ()=> hook.angle=Math.max(hook.angle-0.2,-0.7);
+right.ontouchstart= ()=> hook.angle=Math.min(hook.angle+0.2,0.7);
+
+action.ontouchstart = ()=>{
+  startAudio();
+  if (state==="idle") {
+    hook.active=true;
+    hook.x=fisherman.x;
+    hook.y=fisherman.y+16;
+    state="casting";
+  } else if (state==="hooked") {
+    reelIn();
+  } else if (state==="gameover") resetGame();
+};
+
+/* ================= AUDIO ================= */
+function startAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  musicOsc = audioCtx.createOscillator();
+  musicGain = audioCtx.createGain();
+  musicOsc.type="square";
+  musicOsc.frequency.value=220;
+  musicGain.gain.value=0.05;
+  musicOsc.connect(musicGain).connect(audioCtx.destination);
+  musicOsc.start();
+}
+
+function updateMusic() {
+  if (!musicOsc) return;
+  musicOsc.frequency.value = 220 * musicSpeed;
+}
+
+/* ================= GAME LOGIC ================= */
+function reelIn() {
+  const value = Math.floor(hookedFish.size * hookedFish.rarity.mult);
+  combo++;
+  comboTimer = 180;
+  score += value * combo;
+  fishCaught++;
+  musicSpeed = 1 + fishCaught * 0.1;
+  updateMusic();
+  hookedFish=null;
+  hook.active=false;
+  state="idle";
+}
+
+function loseFish() {
+  lives--;
+  combo=0;
+  shakeTime=20;
+  hookedFish=null;
+  hook.active=false;
+  if (lives<=0) {
+    state="gameover";
+    if (musicOsc) musicOsc.stop();
+  } else state="idle";
+}
+
+function update() {
+  if (comboTimer>0) comboTimer--; else combo=0;
+
+  if (hook.active && state==="casting") {
+    hook.y+=1.3;
+    hook.x+=Math.sin(hook.angle);
+  }
+
+  lanes.forEach(lane=>{
+    if (Math.random()<0.015) spawnEntity(lane);
+
+    const diff = fishCaught>0?1+fishCaught*0.08:1;
+    const speed = lane.baseSpeed*diff*rand(0.9,1.1);
+
+    lane.entities.forEach(e=>{
+      e.x += speed*(e.x<W/2?1:-1);
+
+      if (!hookedFish && hook.active && e.type==="fish") {
+        if (Math.abs(e.x-hook.x)<6 && Math.abs(lane.y-hook.y)<6) {
+          hookedFish=e;
+          state="hooked";
+        }
+      }
+
+      if (hookedFish && e!==hookedFish && e.type!=="fish") {
+        if (Math.abs(e.x-hookedFish.x)<10) loseFish();
+      }
+    });
+
+    lane.entities=lane.entities.filter(e=>e.x>-40&&e.x<W+40);
+  });
+
+  if (hookedFish) {
+    hook.y-=1;
+    hook.x+=Math.sin(hook.angle)*1.2;
+    hookedFish.x=hook.x;
+    if (hook.y<=fisherman.y+18) reelIn();
+  }
+}
+
+/* ================= DRAW ================= */
+function drawRect(x,y,w,h,c){
+  ctx.fillStyle=c;
+  ctx.fillRect(x|0,y|0,w,h);
+}
+
+function draw() {
+  ctx.save();
+  if (shakeTime>0) {
+    shakeTime--;
+    ctx.translate(rand(-3,3),rand(-3,3));
+  }
+
+  ctx.clearRect(0,0,W,H);
+  drawRect(0,0,W,40,"#d7f1ff");
+
+  drawRect(fisherman.x-4,fisherman.y,8,12,"#444");
+  drawRect(fisherman.x-6,fisherman.y-6,12,6,"#777");
+
+  if (hook.active) {
+    ctx.strokeStyle="#111";
+    ctx.beginPath();
+    ctx.moveTo(fisherman.x,fisherman.y+12);
+    ctx.lineTo(hook.x,hook.y);
+    ctx.stroke();
+  }
+
+  lanes.forEach((lane,i)=>{
+    drawRect(0,lane.y-10,W,20,`rgba(0,0,40,${0.05*i})`);
+    lane.entities.forEach(e=>{
+      if (e.type==="fish") {
+        drawRect(e.x-6,lane.y-4,12,6,e.rarity.color);
+      } else if (e.type==="predator") {
+        drawRect(e.x-12,lane.y-6,24,10,"#b03030");
+      } else {
+        drawRect(e.x-4,lane.y-4,8,8,"#777");
+      }
+    });
+  });
+
+  ctx.fillStyle="#fff";
+  ctx.fillText(`Score: ${score}`,6,14);
+  ctx.fillText(`Combo: x${combo}`,6,26);
+
+  if (state==="gameover") {
+    drawRect(20,120,200,60,"#000");
+    ctx.fillStyle="#fff";
+    ctx.fillText("GAME OVER",70,150);
+  }
+
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function resetGame() {
+  score=0; lives=3; fishCaught=0; combo=0;
+  state="idle"; musicSpeed=1;
+}
+
+loop();
+</script>
+</body>
+</html>
